@@ -58,8 +58,7 @@ def main(unused_argv):
         value_extractor=lambda x: x[2])
     budget_accountant = pipeline_dp.NaiveBudgetAccountant(total_epsilon=3,
                                                           total_delta=1e-5)
-    ops = pipeline_dp.LocalPipelineOperations()
-    dp_engine = pipeline_dp.DPEngine(budget_accountant, ops)
+    dp_engine = pipeline_dp.DPEngine(budget_accountant, pipeline_operations)
     params = pipeline_dp.AggregateParams(
         noise_kind=pipeline_dp.NoiseKind.LAPLACE,
         metrics=[pipeline_dp.Metrics.COUNT, pipeline_dp.Metrics.SUM],
