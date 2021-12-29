@@ -1,17 +1,32 @@
 from dataclasses import dataclass
 import typing
 
+from typing import Iterable
+import abc
 import pipeline_dp
-from pipeline_dp.aggregate_params import AggregateParams
-from pipeline_dp.budget_accounting import BudgetAccountant
-from pipeline_dp.pipeline_operations import LocalPipelineOperations, PipelineOperations
-from pipeline_dp.accumulator import Accumulator, AccumulatorFactory, AccumulatorParams, CompoundAccumulator
+from pipeline_dp.aggregate_params import Metrics
+from pipeline_dp.pipeline_operations import LocalPipelineOperations
+from pipeline_dp.accumulator import Accumulator, CompoundAccumulator
 
 
 @dataclass
 class SampleParams:
     partition_sampling_probability: float = 1
     number_of_sampled_partitions: int = -1
+
+
+@dataclass
+class TrueAggregateParams:
+    """Specifies parameters for function aggregate_true()
+
+  Args:
+    metrics: Metrics to compute.
+  """
+
+    metrics: Iterable[Metrics]
+
+    def __str__(self):
+        return f"Metrics: {[m.value for m in self.metrics]}"
 
 
 class DataPeeker:
@@ -106,10 +121,9 @@ class DataPeeker:
             "Transform to (pid, pk, value)")
         return col
 
-    def aggregate_true(self, col, params: AggregateParams,
+    def aggregate_true(self, col, params: TrueAggregateParams,
                        data_extractors: pipeline_dp.DataExtractors):
-        accumulator_factory = AccumulatorFactory(params=params)
-        accumulator_factory.initialize()
+        accumulator_factory = CompoundAccumulatorFactory(params=params)
         aggregator_fn = accumulator_factory.create
 
         col = self._ops.map(
@@ -194,36 +208,64 @@ class PrivacyIdCountAccumulator(Accumulator):
         return self._count
 
 
-def create_accumulator_params(aggregation_params: AggregateParams):
-    accumulator_params = []
+def _create_accumulator_factories(
+    aggregation_params: TrueAggregateParams,
+) -> typing.List['AccumulatorFactory']:
+    factories = []
     if pipeline_dp.Metrics.COUNT in aggregation_params.metrics:
-        accumulator_params.append(
-            AccumulatorParams(accumulator_type=CountAccumulator,
-                              constructor_params=None))
+        factories.append(CountAccumulatorFactory())
     if pipeline_dp.Metrics.SUM in aggregation_params.metrics:
-        accumulator_params.append(
-            AccumulatorParams(accumulator_type=SumAccumulator,
-                              constructor_params=None))
+        factories.append(SumAccumulatorFactory())
     if pipeline_dp.Metrics.PRIVACY_ID_COUNT in aggregation_params.metrics:
-        accumulator_params.append(
-            AccumulatorParams(accumulator_type=PrivacyIdCountAccumulator,
-                              constructor_params=None))
-    return accumulator_params
+        factories.append(PrivacyIdCountAccumulatorFactory())
+    return factories
 
 
-class AccumulatorFactory:
-    """Factory for producing the appropriate Accumulator depending on the
-    AggregateParams and BudgetAccountant."""
+class AccumulatorFactory(abc.ABC):
+    """Abstract base class for all accumulator factories.
 
-    def __init__(self, params: pipeline_dp.AggregateParams):
+    Each concrete implementation of AccumulatorFactory creates Accumulator of
+    the specific type.
+    """
+
+    @abc.abstractmethod
+    def create(self, values: typing.List) -> Accumulator:
+        pass
+
+
+class CountAccumulatorFactory(AccumulatorFactory):
+
+    def create(self, values: typing.List) -> CountAccumulator:
+        return CountAccumulator(values)
+
+
+class SumAccumulatorFactory(AccumulatorFactory):
+
+    def create(self, values: typing.List) -> SumAccumulator:
+        return SumAccumulator(values)
+
+
+class PrivacyIdCountAccumulatorFactory(AccumulatorFactory):
+
+    def create(self, values: typing.List) -> PrivacyIdCountAccumulator:
+        return PrivacyIdCountAccumulator(values)
+
+
+class CompoundAccumulatorFactory(AccumulatorFactory):
+    """Factory for creating CompoundAccumulator.
+
+    CompoundAccumulatorFactory contains one or more AccumulatorFactories which
+    create accumulators for specific metrics. These AccumulatorFactories are
+    created based on pipeline_dp.AggregateParams.
+    """
+
+    def __init__(self, params: TrueAggregateParams):
         self._params = params
-
-    def initialize(self):
-        self._accumulator_params = create_accumulator_params(self._params)
+        self._accumulator_factories = _create_accumulator_factories(params)
 
     def create(self, values: typing.List) -> Accumulator:
         accumulators = []
-        for accumulator_param in self._accumulator_params:
-            accumulators.append(accumulator_param.accumulator_type(values))
+        for factory in self._accumulator_factories:
+            accumulators.append(factory.create(values))
 
         return CompoundAccumulator(accumulators)
