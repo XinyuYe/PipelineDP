@@ -28,13 +28,13 @@ def main(unused_argv):
     MAX_PARTITION_NUM = 10
     input_data = [i for i in range(500)]
     data_extractor = pipeline_dp.DataExtractors(
-        privacy_id_extractor=lambda x: f"pid{x}",
-        partition_extractor=lambda x: f"pk{x%10}",
+        privacy_id_extractor=lambda x: f'pid{x}',
+        partition_extractor=lambda x: f'pk{x%10}',
         value_extractor=lambda x: x)
     pipeline_operations = pipeline_dp.LocalPipelineOperations()
     peeker = data_peeker.DataPeeker(pipeline_operations)
-    sample_params = data_peeker.SampleParams(
-        number_of_sampled_partitions=MAX_PARTITION_NUM)
+    sample_params = data_peeker.SketchParams(
+        metrics=None, number_of_sampled_partitions=MAX_PARTITION_NUM)
     # TODO: Materiaze for next steps, figure out other methods than materialization
     sampled_data = list(peeker.sample(input_data, sample_params,
                                       data_extractor))

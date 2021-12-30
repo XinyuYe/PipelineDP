@@ -1,2 +1,3 @@
 from wally_sketch.data_peeker import DataPeeker
-from wally_sketch.data_peeker import SampleParams
+from wally_sketch.data_peeker import SketchParams
+from wally_sketch.peeker_dp_engine import SketchDPEngine

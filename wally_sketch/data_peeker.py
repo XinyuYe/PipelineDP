@@ -5,45 +5,52 @@ from typing import Iterable
 import abc
 import pipeline_dp
 from pipeline_dp.aggregate_params import Metrics
-from pipeline_dp.pipeline_operations import LocalPipelineOperations
+from pipeline_dp.pipeline_operations import PipelineOperations
 from pipeline_dp.accumulator import Accumulator, CompoundAccumulator
 
 
 @dataclass
-class SampleParams:
+class SketchParams:
+    metrics: Iterable[Metrics]
     partition_sampling_probability: float = 1
     number_of_sampled_partitions: int = -1
 
 
-@dataclass
-class TrueAggregateParams:
-    """Specifies parameters for function aggregate_true()
+# @dataclass
+# class TrueAggregateParams:
+#     """Specifies parameters for function aggregate_true()
 
-  Args:
-    metrics: Metrics to compute.
-  """
+#   Args:
+#     metrics: Metrics to compute.
+#   """
 
-    metrics: Iterable[Metrics]
+#     metrics: Iterable[Metrics]
 
-    def __str__(self):
-        return f"Metrics: {[m.value for m in self.metrics]}"
+#     def __str__(self):
+#         return f"Metrics: {[m.value for m in self.metrics]}"
 
 
 class DataPeeker:
     """Generates sketches for privacy utility analysis"""
 
-    def __init__(self, ops: LocalPipelineOperations):
+    def __init__(self, ops: PipelineOperations):
         self._ops = ops
 
-    def sketch(self, col, params: SampleParams,
+    def sketch(self, col, params: SketchParams,
                data_extractors: pipeline_dp.DataExtractors):
         """Generates sketches in the format of (partition_key, value, partition_count).
+
         The sketches has one entry for each unique (partition_key, privacy_id).
+        Parameter tuning on outputs of sketch ignores `low` and `max` of
+        AggregateParams
 
         partition_key: the hashed version of the current partition key
         partition_value: the per privacy id per partition_key aggregated value
         partition_count: number of partitions this privacy id contributes to
         """
+        accumulator_factory = CompoundAccumulatorFactory(params=params)
+        aggregator_fn = accumulator_factory.create
+
         # Extract the columns.
         col = self._ops.map(
             col, lambda row: (data_extractors.privacy_id_extractor(row),
@@ -76,8 +83,9 @@ class DataPeeker:
                                   ((pk, pid_v[0]), pid_v[1]), "")
         # col : ((partition_key, privacy_id), value))
         col = self._ops.group_by_key(col, "")
-        col = self._ops.map_values(col, lambda lst: sum(lst), "")
-        # col : ((partition_key, privacy_id), aggregated_value))
+        # col = self._ops.map_values(col, lambda l: sum(l), "")
+        col = self._ops.map_values(col, aggregator_fn, "")
+        # col : ((partition_key, privacy_id), accumulator))
 
         col = self._ops.map_tuple(
             col, lambda pk_pid, p_value: (pk_pid[1], (pk_pid[0], p_value)), "")
@@ -88,11 +96,12 @@ class DataPeeker:
         # col : (privacy_id, (partition_count, [(partition_key, aggregated_value)]))
 
         col = self._ops.flat_map(
-            col, lambda x: [(i[0], i[1], x[1][0]) for i in x[1][1]], "")
-        # (partition_key, value, partition_count)
+            col, lambda x: [(i[0], i[1].compute_metrics()[0], x[1][0])
+                            for i in x[1][1]], "")
+        # (partition_key, aggregated_value, partition_count)
         return col
 
-    def sample(self, col, params: SampleParams,
+    def sample(self, col, params: SketchParams,
                data_extractors: pipeline_dp.DataExtractors):
         # Extract the columns.
         col = self._ops.map(
@@ -121,7 +130,7 @@ class DataPeeker:
             "Transform to (pid, pk, value)")
         return col
 
-    def aggregate_true(self, col, params: TrueAggregateParams,
+    def aggregate_true(self, col, params: SketchParams,
                        data_extractors: pipeline_dp.DataExtractors):
         accumulator_factory = CompoundAccumulatorFactory(params=params)
         aggregator_fn = accumulator_factory.create
@@ -137,11 +146,8 @@ class DataPeeker:
             "Rekey to ( (privacy_id, partition_key), value))")
         col = self._ops.group_by_key(col, "Group by pk")
         # ((privacy_id, partition_key), [value])
-        col = self._ops.map_values(
-            col, aggregator_fn,
-            "Apply aggregate_fn after per partition bounding")
+        col = self._ops.map_values(col, aggregator_fn, "Apply aggregate_fn")
         # ((privacy_id, partition_key), aggregator)
-
         col = self._ops.map_tuple(col, lambda pid_pk, v: (pid_pk[1], v),
                                   "Drop privacy id")
         # col : (partition_key, accumulator)
@@ -150,7 +156,8 @@ class DataPeeker:
         # col : (partition_key, accumulator)
         # Compute metrics.
         col = self._ops.map_values(col, lambda acc: acc.compute_metrics(),
-                                   "Compute DP` metrics")
+                                   "Compute DP metrics")
+        # col : (partition_key, aggregated_value)
         return col
 
 
@@ -163,7 +170,7 @@ class CountAccumulator(Accumulator):
         self._count += 1
 
     def add_accumulator(self,
-                        accumulator: 'CountAccumulator') -> 'CountAccumulator':
+                        accumulator: "CountAccumulator") -> "CountAccumulator":
         self._check_mergeable(accumulator)
         self._count += accumulator._count
         return self
@@ -181,7 +188,7 @@ class SumAccumulator(Accumulator):
         self._sum += value
 
     def add_accumulator(self,
-                        accumulator: 'SumAccumulator') -> 'SumAccumulator':
+                        accumulator: "SumAccumulator") -> "SumAccumulator":
         self._check_mergeable(accumulator)
         self._sum += accumulator._sum
 
@@ -198,8 +205,8 @@ class PrivacyIdCountAccumulator(Accumulator):
         pass
 
     def add_accumulator(
-        self, accumulator: 'PrivacyIdCountAccumulator'
-    ) -> 'PrivacyIdCountAccumulator':
+        self, accumulator: "PrivacyIdCountAccumulator"
+    ) -> "PrivacyIdCountAccumulator":
         self._check_mergeable(accumulator)
         self._count += accumulator._count
         return self
@@ -209,14 +216,13 @@ class PrivacyIdCountAccumulator(Accumulator):
 
 
 def _create_accumulator_factories(
-    aggregation_params: TrueAggregateParams,
-) -> typing.List['AccumulatorFactory']:
+    params: SketchParams,) -> typing.List["AccumulatorFactory"]:
     factories = []
-    if pipeline_dp.Metrics.COUNT in aggregation_params.metrics:
+    if pipeline_dp.Metrics.COUNT in params.metrics:
         factories.append(CountAccumulatorFactory())
-    if pipeline_dp.Metrics.SUM in aggregation_params.metrics:
+    if pipeline_dp.Metrics.SUM in params.metrics:
         factories.append(SumAccumulatorFactory())
-    if pipeline_dp.Metrics.PRIVACY_ID_COUNT in aggregation_params.metrics:
+    if pipeline_dp.Metrics.PRIVACY_ID_COUNT in params.metrics:
         factories.append(PrivacyIdCountAccumulatorFactory())
     return factories
 
@@ -259,7 +265,7 @@ class CompoundAccumulatorFactory(AccumulatorFactory):
     created based on pipeline_dp.AggregateParams.
     """
 
-    def __init__(self, params: TrueAggregateParams):
+    def __init__(self, params: SketchParams):
         self._params = params
         self._accumulator_factories = _create_accumulator_factories(params)
 
