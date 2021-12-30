@@ -80,8 +80,10 @@ class BeamOperationsTest(parameterized.TestCase):
                                   beam_util.equal_to([(6, 2), (7, 2), (8, 1)]))
 
 
-@unittest.skipIf(sys.platform == "win32",
-                 "There are some problems with PySpark setup on Windows")
+@unittest.skipIf(
+    sys.platform == "win32" or
+    (sys.version_info.minor <= 7 and sys.version_info.major == 3),
+    "There are some problems with PySpark setup on older python and Windows")
 class SparkRDDOperationsTest(parameterized.TestCase):
 
     @classmethod
