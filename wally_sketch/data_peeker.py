@@ -83,7 +83,7 @@ class DataPeeker:
                                   ((pk, pid_v[0]), pid_v[1]), "")
         # col : ((partition_key, privacy_id), value))
         col = self._ops.group_by_key(col, "")
-        # col = self._ops.map_values(col, lambda l: sum(l), "")
+        # col : ((partition_key, privacy_id), [value]))
         col = self._ops.map_values(col, aggregator_fn, "")
         # col : ((partition_key, privacy_id), accumulator))
 
