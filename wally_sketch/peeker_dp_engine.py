@@ -1,3 +1,4 @@
+import pipeline_dp
 from pipeline_dp.aggregate_params import AggregateParams
 from pipeline_dp.pipeline_operations import PipelineOperations
 from pipeline_dp import BudgetAccountant
@@ -10,6 +11,25 @@ from pipeline_dp.budget_accounting import BudgetAccountant, MechanismSpec
 import pydp.algorithms.partition_selection as partition_selection
 
 
+def aggregate_sketch_true(ops: PipelineOperations, col,
+                          metric: pipeline_dp.Metrics):
+    if metric == pipeline_dp.Metrics.SUM:
+        aggregator_fn = sum
+    elif metric == pipeline_dp.Metrics.COUNT:
+        aggregator_fn = len
+    else:
+        raise ValueError('Aggregate sketch only supports sum or count')
+    # col: (partition_key, per_user_aggregated_value, partition_count)
+    col = ops.map_tuple(col, lambda pk, pval, _: (pk, pval),
+                        'Drop partition count')
+    # col: (partition_key, per_user_aggregated_value)
+    col = ops.group_by_key(col, "Group by partition key")
+    # col: (partition_key, [per_user_aggregated_value])
+    col = ops.map_values(col, lambda val: aggregator_fn(val),
+                         "Aggregate by partition key")
+    return col
+
+
 class SketchDPEngine:
     """Performs DP aggregations."""
 
@@ -19,7 +39,7 @@ class SketchDPEngine:
         self._ops = ops
         self._report_generators = []
 
-    def aggregate_sketches(self, col, params: AggregateParams):
+    def aggregate_sketches_dp(self, col, params: AggregateParams):
         # col: (partition_key, per_user_aggregated_value, partition_count)
         # self._report_generators.append(ReportGenerator(params))
         accumulator_factory = CompoundAccumulatorFactory(

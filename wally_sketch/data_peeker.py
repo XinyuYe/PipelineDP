@@ -11,7 +11,7 @@ from pipeline_dp.accumulator import Accumulator, CompoundAccumulator
 
 @dataclass
 class SketchParams:
-    metrics: Iterable[Metrics]
+    metrics: Iterable[Metrics] = None
     partition_sampling_probability: float = 1
     number_of_sampled_partitions: int = -1
 
